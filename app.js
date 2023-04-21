@@ -1,0 +1,172 @@
+const express = require("express");
+const path = require("path");
+
+const { open } = require("sqlite");
+const sqlite3 = require("sqlite3");
+
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+
+const app = express();
+app.use(express.json());
+
+const dbPath = path.join(__dirname, "twitterClone.db");
+
+let db = null;
+
+const initializeDBAndServer = async () => {
+  try {
+    db = await open({
+      filename: dbPath,
+      driver: sqlite3.Database,
+    });
+    app.listen(3000, () => {
+      console.log("Server Running at http://localhost:3000/");
+    });
+  } catch (e) {
+    console.log(`DB Error: ${e.message}`);
+    process.exit(1);
+  }
+};
+
+initializeDBAndServer();
+
+//API-1
+
+app.post("/register/", async (request, response) => {
+  const { name, username, password, gender } = request.body;
+  const hashedPassword = await bcrypt.hash(password, 10);
+  console.log(hashedPassword);
+  const selectUserQuery = `
+    SELECT *
+    FROM user
+    WHERE username= '${username}'`;
+  const dbResponse = await db.get(selectUserQuery);
+  if (dbResponse !== undefined) {
+    response.status = 400;
+    response.send("User already exists");
+  } else {
+    if (password.length < 6) {
+      response.status = 400;
+      response.send("Password is too short");
+    } else {
+      const registerQuery = `
+            INSERT INTO
+              user(name, username, password, gender)
+            VALUES 
+              (
+                  '${name}',
+                  '${username}',
+                  '${hashedPassword}',
+                  '${gender}'
+              );`;
+      await db.run(registerQuery);
+      response.send("User created successfully");
+    }
+  }
+});
+
+//API-2
+
+app.post("/login", async (request, response) => {
+  const { username, password } = request.body;
+  const selectUserQuery = `SELECT * FROM user WHERE username = '${username}'`;
+  const dbUser = await db.get(selectUserQuery);
+  if (dbUser === undefined) {
+    response.status(400);
+    response.send("Invalid User");
+  } else {
+    const isPasswordMatched = await bcrypt.compare(password, dbUser.password);
+    if (isPasswordMatched === true) {
+      const payload = {
+        username: username,
+      };
+      const jwtToken = jwt.sign(payload, "MY_SECRET_TOKEN");
+      response.send({ jwtToken });
+    } else {
+      response.status(400);
+      response.send("Invalid Password");
+    }
+  }
+});
+
+const authenticateToken = (request, response, next) => {
+  let jwtToken;
+  const authHeader = request.headers["authorization"];
+  if (authHeader !== undefined) {
+    jwtToken = authHeader.split(" ")[1];
+  }
+  if (jwtToken === undefined) {
+    response.status(401);
+    response.send("Invalid JWT Token");
+  } else {
+    jwt.verify(jwtToken, "MY_SECRET_TOKEN", async (error, payload) => {
+      if (error) {
+        response.status(401);
+        response.send("Invalid JWT Token");
+      } else {
+        request.username = payload.username;
+        next();
+      }
+    });
+  }
+};
+
+//API-3
+
+app.get("/user/tweets/feed/", authenticateToken, async (request, response) => {
+  const getUsersQuery = `
+    SELECT user.username AS username,
+    tweet.tweet AS tweet,
+    tweet.date_time AS dateTime
+    FROM user JOIN tweet
+    LIMIT 4
+    `;
+  const dbResponse = await db.all(getUsersQuery);
+  response.send(dbResponse);
+});
+
+//API-4
+
+app.get("/user/following/", authenticateToken, async (request, response) => {
+  const getFollowingQuery = `
+    SELECT user.name AS name
+    FROM user INNER JOIN follower ON user.user_id=follower.following_user_id
+    GROUP BY name
+
+    `;
+  const followingUsers = await db.all(getFollowingQuery);
+  response.send(followingUsers);
+});
+
+//API-5
+
+app.get("/user/follower/", authenticateToken, async (request, response) => {
+  const getFollowerQuery = `
+    SELECT user.name AS name
+    FROM user INNER JOIN follower ON user.user_id=follower.follower_user_id
+    GROUP BY name
+
+    `;
+  const followerUsers = await db.all(getFollowerQuery);
+  response.send(followerUsers);
+});
+
+//API-6
+
+app.get('/tweets/:tweetId/' authenticateToken, async(request, response) => {
+    const {tweetId}=request.params
+    const getTweetQuery = `
+    SELECT T.tweet,
+    COUNT(T.like) AS likes,
+    COUNT(like.reply) AS replies
+    FROM tweet INNER JOIN reply tweet.tweet_id=replay.tweet_id AS T INNER JOIN like T.tweet_id=like.tweet_id
+    WHERE T.tweet_id=${tweetId}
+    GROUP BY T.tweet   
+    ;`;
+    const getTweet = await db.get(getTweetQuery);
+    response.send(getTweet);
+});       
+
+module.exports = app;
+             
